@@ -561,7 +561,8 @@ def GrowthCurveModeler( file_or_dir, **varargin):
             output_sheet.write_row(i, 0, (sugar,strain,lagtime, max_u, doubling_time, OD_max, median_OD_max, OD_min, median_OD_min, delta_OD_max, \
                                           note, rsquared, rmse), data_format)
 
-            
+    output_workbook.close()
+   
             
             #plot title = name         
              
