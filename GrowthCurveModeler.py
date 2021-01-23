@@ -371,7 +371,50 @@ def MicrobialKinetics(OD_values, time_interval, incubation_time, threshold, mode
     
     return (lag_time, max_spec_growth_rate, max_od, min_od, median_od_max, median_od_min, delta_OD_max, doubling_time, rsquared,rmse, note)
     
+
+
+class KineticMeasurement:
+    def __init__(self, data, sugar, strain, metadata_dict, negative_control=False, positive_control=False):
+        self.data = data
+        self.sugar = sugar
+        self.strain = strain
+        self.metadata_dict = metadata_dict
+        self.negative_control = negative_control
+        self.positive_control = positive_control
+
+
+def ParseLegacyFormat(file):
     
+    workbook = xlrd.open_workbook(file)
+    sheet = workbook.sheet_by_index(0)
+    num_columns = sheet.ncols
+    
+    title_data0 = sheet.row(0)
+    title_data1 = sheet.row(1)
+    
+    ret_kinetics = []
+
+    for i in range(num_columns):
+        data_column = sheet.col_slice(i, 2)
+        data_column_values = []
+        for d in data_column:
+            data_column_values.append(float(d.value))
+        if (sheet.cell(0, i)):
+            sugar = title_data0[i].value
+        if (title_data1[i].value == "Time"):
+            time_interval = data_column_values[1] - data_column_values[0]
+        else:
+            strain = title_data1[i].value
+            data = np.array(data_column_values, dtype=float)
+            ret_kinetics.append(KineticMeasurement(data, sugar, strain, {}, False, False))
+    return time_interval, ret_kinetics
+
+def ParseMetaDataAndRawDataPair(datafile, metadatafile):
+    return 0,0
+    
+
+
+
     
 def GrowthCurveModeler( file_or_dir, **varargin):
     """
@@ -383,6 +426,9 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     file_or_dir - input data file or directory of input files, must be formatted properly
 
     Optional parameters:
+    MetaDataFile - value {default is ''}
+      Excel file which specifies labels, and metadata for raw output data.
+      If missing or empty, assumes data formatted like the example datasets.
 
     MaxTimepoint - value {default is total specified in dataset}
       Final timepoint of the dataset 
@@ -433,6 +479,8 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     data_min = 0
     ignore_pre_min = 0
     r2_good_fit_cutoff = 0.97
+    metadata = False
+    metadata_file = ''
 
     for k,v in varargin.items():
         if (k=='MaxTimepoint'):
@@ -451,6 +499,10 @@ def GrowthCurveModeler( file_or_dir, **varargin):
             ignore_pre_min = v
         if (k=='RSquaredFlag'):
             r2_good_fit_cutoff = v
+        if (k=='MetaDataFile'):
+            metadata = True
+            metadata_file = v
+        
     
     (path, file) = os.path.split(file_or_dir)
     (stub, ext) = os.path.splitext(file)
@@ -468,10 +520,11 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     if (not os.path.exists(plots_folder)):
         os.mkdir(plots_folder)
 
+
+    (time_interval, kinetic_measurements) = ParseLegacyFormat(file_or_dir)
     
-    workbook = xlrd.open_workbook(file_or_dir)
-    sheet = workbook.sheet_by_index(0)
-    num_columns = sheet.ncols
+
+
     
     output = ('Sugar', 'Strain', 'Lag Time (hours)', 'Max Specific Growth Rate (1/hours)',\
             'Doubling Time (hours)', 'Max OD', 'Max OD (Median Filtered Data)', 'Min OD', 'Min OD (Median Filtered Data)', 'Delta OD (Median Filtered Data)', 'Notes', 'R^2', 'RMSE')
@@ -516,50 +569,29 @@ def GrowthCurveModeler( file_or_dir, **varargin):
 
     output_sheet.write_row(0,0, output, header_format)
         
-    title_data0 = sheet.row(0)
-    title_data1 = sheet.row(1)
-    for i in range(num_columns):
-        data_column = sheet.col_slice(i, 2)
-        data_column_values = []
-        for d in data_column:
-            data_column_values.append(float(d.value))
-        if (sheet.cell(0,i)):
-            if (not first_sugar):
-                Strain_counts.append(strain_count)
-            strain_count = 0
-            sugar_start_idx = i
-            first_sugar = False
-            sugar_count = sugar_count + 1
-            sugar = title_data0[i].value
-            Start_idxs.append(sugar_start_idx)
-            Sugars.append(sugar)
-        if (title_data1[i].value=="Time"):
-            time_interval = data_column_values[1] - data_column_values[0]
+    for (i,meas) in enumerate(kinetic_measurements):
+        sugar_folder = plots_folder + "/" + meas.sugar
+        if (not os.path.exists(sugar_folder)):
+            os.mkdir(sugar_folder)
+        full_filename = sugar_folder + "/" + meas.sugar + '-' + meas.strain
+        
+        if (max_timepoint < 0):
+            (lagtime, max_u, OD_max, OD_min, median_OD_max, median_OD_min, delta_OD_max, doubling_time, rsquared, rmse, note) = MicrobialKinetics(
+                np.array(meas.data, dtype=float), time_interval, incubation_time, growth_threshold, model,
+                double_hump, full_filename, data_min, ignore_pre_min, meas.sugar + '-' + meas.strain)
         else:
-            strain_count = strain_count + 1
-            strain = title_data1[i].value
-            sugar_folder = plots_folder + "/" + sugar
-            if (not os.path.exists(sugar_folder)):
-                os.mkdir(sugar_folder)
-            full_filename = sugar_folder + "/" +sugar + '-' + strain
-            
-            if (max_timepoint < 0):
-                (lagtime, max_u, OD_max, OD_min, median_OD_max, median_OD_min, delta_OD_max, doubling_time, rsquared, rmse, note) = MicrobialKinetics(
-                    np.array(data_column_values, dtype=float), time_interval, incubation_time, growth_threshold, model,
-                    double_hump, full_filename, data_min, ignore_pre_min, sugar + '-' + strain)
-            else:
-                (lagtime, max_u, OD_max, OD_min, median_OD_max, median_OD_min, delta_OD_max, doubling_time, rsquared, rmse, note) = MicrobialKinetics(
-                    np.array(data_column_values[0:max_timepoint / time_interval]), time_interval, incubation_time,
-                    growth_threshold, model, double_hump, full_filename, data_min, ignore_pre_min, sugar + '-' + strain)
-            lag_times.append(lagtime)
+            (lagtime, max_u, OD_max, OD_min, median_OD_max, median_OD_min, delta_OD_max, doubling_time, rsquared, rmse, note) = MicrobialKinetics(
+                np.array(meas.data[0:max_timepoint / time_interval]), time_interval, incubation_time,
+                growth_threshold, model, double_hump, full_filename, data_min, ignore_pre_min, meas.sugar + '-' + meas.strain)
+        lag_times.append(lagtime)
 
-            if (not isinstance(rsquared, str) and rsquared  < r2_good_fit_cutoff):
-                if (len(note) > 0):
-                    note = note + '; '
-                note = note + 'Poor Regression'
+        if (not isinstance(rsquared, str) and rsquared  < r2_good_fit_cutoff):
+            if (len(note) > 0):
+                note = note + '; '
+            note = note + 'Poor Regression'
 
-            output_sheet.write_row(i, 0, (sugar,strain,lagtime, max_u, doubling_time, OD_max, median_OD_max, OD_min, median_OD_min, delta_OD_max, \
-                                          note, rsquared, rmse), data_format)
+        output_sheet.write_row(i, 0, (meas.sugar,meas.strain,lagtime, max_u, doubling_time, OD_max, median_OD_max, OD_min, median_OD_min, delta_OD_max, \
+                                        note, rsquared, rmse), data_format)
 
     output_workbook.close()
    
