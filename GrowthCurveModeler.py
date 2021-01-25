@@ -374,13 +374,34 @@ def MicrobialKinetics(OD_values, time_interval, incubation_time, threshold, mode
 
 
 class KineticMeasurement:
-    def __init__(self, data, sugar, strain, metadata_dict, negative_control=False, positive_control=False):
+    def __init__(self, data=None, 
+                 Bug='', 
+                 Micro_sampleID='', 
+                 negative_control=False,
+                 positive_control=False,
+                 Column=1,
+                 Row='A',
+                 **kwargs):
         self.data = data
-        self.sugar = sugar
-        self.strain = strain
-        self.metadata_dict = metadata_dict
+        self.sugar = Micro_sampleID
+        self.strain = Bug
+        self.metadata_dict = kwargs
         self.negative_control = negative_control
         self.positive_control = positive_control
+        self.column = Column
+        self.row = Row
+
+    def load_data(self, file, num_timepoints):
+        lookup_string = self.row + str(int(self.column))
+        data_workbook = xlrd.open_workbook(file)
+        sheet = data_workbook.sheet_by_index(0)
+        data_col = find_col(
+            lookup_string, sheet.row(0))
+#        for d in sheet.col(data_col)[1:]:
+#            print(d.value)
+        self.data=np.array([float(d.value) for d in sheet.col(data_col)[1:num_timepoints+1]],dtype=float)
+        #load data
+
 
 
 def ParseLegacyFormat(file):
@@ -409,8 +430,53 @@ def ParseLegacyFormat(file):
             ret_kinetics.append(KineticMeasurement(data, sugar, strain, {}, False, False))
     return time_interval, ret_kinetics
 
-def ParseMetaDataAndRawDataPair(datafile, metadatafile):
-    return 0,0
+def find_col(string_to_find, row):
+    print('matching ' + string_to_find)
+    for c,ele in enumerate(row):
+        if ele.value == string_to_find:
+#            print ('matched ' + ele.value)
+            return c
+#        else:
+#            print('no match ' + ele.value)
+
+def TimeToFloat(time):
+    return time*24.
+
+def ParseMetaDataAndRawDataPair(metadatafile,datafile):
+    
+    workbook_meta = xlrd.open_workbook(metadatafile)
+    meta_sheet = workbook_meta.sheet_by_index(0)
+    num_rows = meta_sheet.nrows
+    label_row = meta_sheet.row(0)
+    labels = []
+    data_workbook = xlrd.open_workbook(datafile)
+    data_sheet =  data_workbook.sheet_by_index(0)
+    time_col = int(find_col('Time', data_sheet.row(0)))
+
+    time_col_vals = data_sheet.col(time_col)
+    last_timepoint = -0.1
+    num_timepoints = 0
+    for t in time_col_vals[1:]:
+        if TimeToFloat(t.value) > last_timepoint:
+            last_timepoint = TimeToFloat(t.value)
+            num_timepoints= num_timepoints+1
+        else:
+            break
+    time_interval = TimeToFloat(time_col_vals[2].value) - TimeToFloat(time_col_vals[1].value)
+    
+
+    for lab in label_row:
+        labels.append(lab.value)
+    ret_kinetics = []
+    for r in range(1, num_rows):
+        row = meta_sheet.row(r)
+
+        params = {label_row[i].value: row[i].value for i in range(len(label_row))}
+        ret_kinetics.append(KineticMeasurement(**params))
+        ret_kinetics[r-1].load_data(datafile, num_timepoints)
+    
+    return time_interval, ret_kinetics
+
     
 
 
