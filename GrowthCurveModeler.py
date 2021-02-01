@@ -367,9 +367,20 @@ def MicrobialKinetics(OD_values, time_interval, incubation_time, threshold, mode
     
     
     #legend(lag_time_str, 'location', 'SouthOutside');
+    results = {}
+    results['lagtime'] = lag_time
+    results['max_u'] = max_spec_growth_rate
+    results['OD_max'] = max_od
+    results['OD_min'] = min_od
+    results['median_OD_max'] = median_od_max
+    results['median_OD_min'] = median_od_max
+    results['delta_OD_max'] = delta_OD_max
+    results['doubling_time'] = doubling_time
+    results['rsquared'] = rsquared
+    results['rmse'] = rmse
+    results['note'] = note
     
-    
-    return (lag_time, max_spec_growth_rate, max_od, min_od, median_od_max, median_od_min, delta_OD_max, doubling_time, rsquared,rmse, note)
+    return results
     
 
 
@@ -377,8 +388,8 @@ class KineticMeasurement:
     def __init__(self, data=None, 
                  Bug='', 
                  Micro_sampleID='', 
-                 negative_control=False,
-                 positive_control=False,
+                 negative_control='',
+                 positive_control='',
                  Column=1,
                  Row='A',
                  **kwargs):
@@ -386,10 +397,25 @@ class KineticMeasurement:
         self.sugar = Micro_sampleID
         self.strain = Bug
         self.metadata_dict = kwargs
-        self.negative_control = negative_control
-        self.positive_control = positive_control
-        self.column = Column
+        if negative_control=='control':
+            self.negative_control = 'self'
+        else:
+            self.negative_control = negative_control
+        if positive_control == 'Yes':
+            self.positive_control = True
+        else:
+            self.positive_control = False
+        self.column = int(Column)
         self.row = Row
+        self.adjusted_by_negative_control = False
+        self.results = {}
+#        lagtime, max_u, OD_max, OD_min, median_OD_max, median_OD_min, delta_OD_max, doubling_time, rsquared, rmse, note
+
+    def add_results(self, **params):
+        self.results.update(params)
+
+
+
 
     def load_data(self, file, num_timepoints):
         lookup_string = self.row + str(int(self.column))
@@ -401,6 +427,39 @@ class KineticMeasurement:
 #            print(d.value)
         self.data=np.array([float(d.value) for d in sheet.col(data_col)[1:num_timepoints+1]],dtype=float)
         #load data
+
+    def is_cell(self, lookup_string):
+#        print(lookup_string + " = " + str(self.row) + str(self.column))
+        return (str(self.row) + str(self.column) == lookup_string)
+    
+    def process_controls(self, all_data):
+        if self.negative_control != 'control':
+            for e in all_data:
+                if e.is_cell(self.negative_control):
+#                    print (self.data)
+#                    print('removing control')
+                    self.data -= e.data
+#                    print (self.data)
+                    break
+        self.adjusted_by_negative_control = True
+
+    def calc_pos_control_metrics(self, positive_control, GradeThresholds):
+        GradeThresholds.append(999999999999)
+        if 'delta_OD_max' in self.results.keys():
+            self.results['OD_Max_percent_positive_control'] = 100. *  self.results['delta_OD_max'] / positive_control.results['delta_OD_max']
+            for i, thresh in enumerate(GradeThresholds):
+                if self.results['OD_Max_percent_positive_control'] < thresh:
+                    self.results['GrowthGrade'] = i
+                    return
+        else:
+            self.results['OD_Max_percent_positive_control'] = ''
+            self.results['GrowthGrade'] = ''
+
+
+def process_all_controls(all_data):
+    for exp in all_data:
+        exp.process_controls(all_data)
+
 
 
 
@@ -431,7 +490,7 @@ def ParseLegacyFormat(file):
     return time_interval, ret_kinetics
 
 def find_col(string_to_find, row):
-    print('matching ' + string_to_find)
+#    print('matching ' + string_to_find)
     for c,ele in enumerate(row):
         if ele.value == string_to_find:
 #            print ('matched ' + ele.value)
@@ -475,10 +534,16 @@ def ParseMetaDataAndRawDataPair(metadatafile,datafile):
         ret_kinetics.append(KineticMeasurement(**params))
         ret_kinetics[r-1].load_data(datafile, num_timepoints)
     
-    return time_interval, ret_kinetics
+    process_all_controls(ret_kinetics)
+    
+    return time_interval, ret_kinetics, labels
 
     
-
+def get_positive_control(all_data):
+    for meas in all_data:
+        if meas.positive_control:
+            return meas
+    return None
 
 
     
@@ -495,6 +560,12 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     MetaDataFile - value {default is ''}
       Excel file which specifies labels, and metadata for raw output data.
       If missing or empty, assumes data formatted like the example datasets.
+
+    GradeThresholds - default is [20,50]
+        Percent Thresholds for grading bacterial growth delta od max vs the positive control's 
+        delta od max.  Grades are 0 - (N+1) where N is the number of thresholds provided
+        a grade m is given to a curve whos delta od max % of the positive control is 
+        between the (m-1)th and (mth) threshold provided.
 
     MaxTimepoint - value {default is total specified in dataset}
       Final timepoint of the dataset 
@@ -547,6 +618,7 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     r2_good_fit_cutoff = 0.97
     metadata = False
     metadata_file = ''
+    GradeThresholds = [20,50]
 
     for k,v in varargin.items():
         if (k=='MaxTimepoint'):
@@ -568,6 +640,8 @@ def GrowthCurveModeler( file_or_dir, **varargin):
         if (k=='MetaDataFile'):
             metadata = True
             metadata_file = v
+        if (k=='GradeThresholds'):
+            GradeThresholds = v
         
     
     (path, file) = os.path.split(file_or_dir)
@@ -586,25 +660,61 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     if (not os.path.exists(plots_folder)):
         os.mkdir(plots_folder)
 
+    metadata_labels = []
+    if metadata:
+        (time_interval, kinetic_measurements, metadata_labels) = ParseMetaDataAndRawDataPair(metadata_file, file_or_dir)
+    else:
+        (time_interval, kinetic_measurements) = ParseLegacyFormat(file_or_dir)
+        metadata_labels = ['sugar', 'strain']
 
-    (time_interval, kinetic_measurements) = ParseLegacyFormat(file_or_dir)
     
 
+        
+    for (i,meas) in enumerate(kinetic_measurements):
+        sugar_folder = plots_folder + "/" + meas.sugar
+        if (not os.path.exists(sugar_folder)):
+            os.mkdir(sugar_folder)
+        full_filename = sugar_folder + "/" + meas.sugar + \
+            '-' + meas.strain + '-' + meas.row + str(int(meas.column))
+        
+        
+        if (max_timepoint < 0):
+            results = MicrobialKinetics(
+                np.array(meas.data, dtype=float), time_interval, incubation_time, growth_threshold, model,
+                double_hump, full_filename, data_min, ignore_pre_min, meas.sugar + '-' + meas.strain)
+        else:
+            results = MicrobialKinetics(
+                np.array(meas.data[0:max_timepoint / time_interval]), time_interval, incubation_time,
+                growth_threshold, model, double_hump, full_filename, data_min, ignore_pre_min, meas.sugar + '-' + meas.strain)
 
-    
-    output = ('Sugar', 'Strain', 'Lag Time (hours)', 'Max Specific Growth Rate (1/hours)',\
-            'Doubling Time (hours)', 'Max OD', 'Max OD (Median Filtered Data)', 'Min OD', 'Min OD (Median Filtered Data)', 'Delta OD (Median Filtered Data)', 'Notes', 'R^2', 'RMSE')
+        meas.add_results(**results)
+
+        if ('rquared' in meas.results.keys()) and \
+            (not isinstance(meas.results['rsquared'], str) and\
+            meas.results['rsquared']  < r2_good_fit_cutoff):
+            if (len(meas.results['note']) > 0):
+                meas.results['note'] = meas.results['note'] + '; '
+            meas.results['note'] = meas.results['note'] + 'Poor Regression'
+
+
+#process results
+    positive_control = get_positive_control(kinetic_measurements)
+    for (i,meas) in enumerate(kinetic_measurements):
+        meas.calc_pos_control_metrics(positive_control, GradeThresholds)
+
+
+    if positive_control:
+        pos_control_fields = ('Delta_OD / Positive_Control_Delta_OD * 100','Growth Rating')
+    else:
+        pos_control_fields = ()
+
+    output = (*metadata_labels,'Lag Time (hours)', 'Max Specific Growth Rate (1/hours)',\
+            'Doubling Time (hours)', 'Max OD', 'Max OD (Median Filtered Data)', 'Min OD',\
+            'Min OD (Median Filtered Data)', 'Delta OD (Median Filtered Data)',  \
+            'R^2', 'RMSE', 'Notes', *pos_control_fields)
     
     time_interval = 0.5
-    sugar = ''
-    strain_count = 0
-    sugar_count = 0
 
-    first_sugar = True
-    Sugars = []
-    Start_idxs = []
-    Strain_counts = []
-    lag_times = []
 
     output_file = path + 'results/' + stub + ' results.xlsx'
     output_workbook = xlsxwriter.Workbook(output_file)
@@ -620,12 +730,16 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     red_text.set_color('red')
     red_text.set_align('center')
 
-    output_sheet.conditional_format('L2:L600', {'type': 'cell', 'criteria': 'between',  'maximum': r2_good_fit_cutoff,'minimum': 0.0000001,  'format': red_fill})
-    output_sheet.conditional_format('L2:L600', {'type': '2_color_scale','min_color': "#FFA550",'max_color': "#80D040", 'min_type': 'num', 'max_type':'num','min_value': r2_good_fit_cutoff,'max_value':1.0})
+    column_letter = chr(65 + 9 + len(metadata_labels))
+    output_sheet.conditional_format(column_letter + '2:'+ column_letter + '600', {'type': 'cell', 'criteria': 'between',  'maximum': r2_good_fit_cutoff,'minimum': 0.0000001,  'format': red_fill})
+    output_sheet.conditional_format(column_letter + '2:' + column_letter + '600', {
+                                    'type': '2_color_scale', 'min_color': "#FFA550", 'max_color': "#80D040", 'min_type': 'num', 'max_type': 'num', 'min_value': r2_good_fit_cutoff, 'max_value': 1.0})
 #   output_sheet.conditional_format('L2:L600', {'type': 'cell','criteria': '>', 'value': r2_good_fit_cutoff,'minimum': 0.0000001,  'format': green_fill})
+    column_letter = chr(65 + 8 + len(metadata_labels))
 
-    output_sheet.conditional_format('K2:K600', {'type': 'no_blanks', 'format': red_text})
-    output_sheet.freeze_panes(1,2)
+    output_sheet.conditional_format(
+        column_letter + '2:' + column_letter + '600', {'type': 'no_blanks', 'format': red_text})
+    output_sheet.freeze_panes(1,0)
     header_format = output_workbook.add_format()
     header_format.set_text_wrap(1)
     header_format.set_bold(1)
@@ -634,30 +748,19 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     data_format.set_align('center')
 
     output_sheet.write_row(0,0, output, header_format)
-        
+
+
+    #write outputs
     for (i,meas) in enumerate(kinetic_measurements):
-        sugar_folder = plots_folder + "/" + meas.sugar
-        if (not os.path.exists(sugar_folder)):
-            os.mkdir(sugar_folder)
-        full_filename = sugar_folder + "/" + meas.sugar + '-' + meas.strain
-        
-        if (max_timepoint < 0):
-            (lagtime, max_u, OD_max, OD_min, median_OD_max, median_OD_min, delta_OD_max, doubling_time, rsquared, rmse, note) = MicrobialKinetics(
-                np.array(meas.data, dtype=float), time_interval, incubation_time, growth_threshold, model,
-                double_hump, full_filename, data_min, ignore_pre_min, meas.sugar + '-' + meas.strain)
+        if metadata:
+            givens = (meas.column, meas.row, meas.sugar, 
+                      meas.strain, meas.negative_control, meas.positive_control) 
         else:
-            (lagtime, max_u, OD_max, OD_min, median_OD_max, median_OD_min, delta_OD_max, doubling_time, rsquared, rmse, note) = MicrobialKinetics(
-                np.array(meas.data[0:max_timepoint / time_interval]), time_interval, incubation_time,
-                growth_threshold, model, double_hump, full_filename, data_min, ignore_pre_min, meas.sugar + '-' + meas.strain)
-        lag_times.append(lagtime)
-
-        if (not isinstance(rsquared, str) and rsquared  < r2_good_fit_cutoff):
-            if (len(note) > 0):
-                note = note + '; '
-            note = note + 'Poor Regression'
-
-        output_sheet.write_row(i, 0, (meas.sugar,meas.strain,lagtime, max_u, doubling_time, OD_max, median_OD_max, OD_min, median_OD_min, delta_OD_max, \
-                                        note, rsquared, rmse), data_format)
+            givens = (meas.sugar, meas.strain)
+        output_sheet.write_row(i+1, 0, givens, data_format)
+        meta_data_values = tuple(meas.metadata_dict.values())
+        output_sheet.write_row(i+1, len(givens), meta_data_values, data_format)
+        output_sheet.write_row(i+1, len(givens) + len(meta_data_values), meas.results.values(), data_format)
 
     output_workbook.close()
    
