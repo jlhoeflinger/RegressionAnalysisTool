@@ -363,22 +363,19 @@ def MicrobialKinetics(OD_values, time_interval, incubation_time, threshold, mode
     
     #report both max OD And median filtered max OF to excel
 
-
-    
-    
     #legend(lag_time_str, 'location', 'SouthOutside');
     results = {}
-    results['lagtime'] = lag_time
-    results['max_u'] = max_spec_growth_rate
-    results['OD_max'] = max_od
-    results['OD_min'] = min_od
-    results['median_OD_max'] = median_od_max
-    results['median_OD_min'] = median_od_max
-    results['delta_OD_max'] = delta_OD_max
-    results['doubling_time'] = doubling_time
-    results['rsquared'] = rsquared
-    results['rmse'] = rmse
-    results['note'] = note
+    results['Lag Time (hours)'] = lag_time
+    results['Max Specific Growth Rate (1/hours)'] = max_spec_growth_rate
+    results['Doubling Time (hours)'] = doubling_time
+    results['Max OD'] = max_od
+    results['Max OD (Median Filtered Data)'] = median_od_max
+    results['Min OD'] = min_od
+    results['Min OD (Median Filtered Data)'] = median_od_min
+    results['Delta OD (Median Filtered Data)'] = delta_OD_max
+    results['R^2'] = rsquared
+    results['RMSE'] = rmse
+    results['Notes'] = note
     
     return results
     
@@ -400,11 +397,15 @@ class KineticMeasurement:
         if negative_control=='control':
             self.negative_control = 'self'
         else:
-            self.negative_control = negative_control
-        if positive_control == 'Yes':
-            self.positive_control = True
+            self.negative_control = negative_control.split(',')
+            for neg in self.negative_control:
+                neg.strip()
+        if positive_control == 'control':
+            self.positive_control = 'self'
         else:
-            self.positive_control = False
+            self.positive_control = positive_control.split(',')
+            for pos in self.positive_control:
+                pos.strip()
         self.column = int(Column)
         self.row = Row
         self.adjusted_by_negative_control = False
@@ -434,26 +435,42 @@ class KineticMeasurement:
     
     def process_controls(self, all_data):
         if self.negative_control != 'control':
-            for e in all_data:
-                if e.is_cell(self.negative_control):
-#                    print (self.data)
-#                    print('removing control')
-                    self.data -= e.data
-#                    print (self.data)
-                    break
+            subdata = np.zeros_like(self.data)
+            for cont in self.negative_control:
+                for e in all_data:
+                    if e.is_cell(cont):
+    #                    print (self.data)
+    #                    print('removing control')
+                        subdata += e.data
+    #                    print (self.data)
+                        break
+            subdata/=len(self.negative_control)
+            self.data -= subdata
         self.adjusted_by_negative_control = True
 
-    def calc_pos_control_metrics(self, positive_control, GradeThresholds):
+    def calc_pos_control_metrics(self, all_data, GradeThresholds):
         GradeThresholds.append(999999999999)
-        if 'delta_OD_max' in self.results.keys():
-            self.results['OD_Max_percent_positive_control'] = 100. *  self.results['delta_OD_max'] / positive_control.results['delta_OD_max']
-            for i, thresh in enumerate(GradeThresholds):
-                if self.results['OD_Max_percent_positive_control'] < thresh:
-                    self.results['GrowthGrade'] = i
-                    return
+        if 'Delta OD (Median Filtered Data)' in self.results.keys() and len(self.positive_control):
+            avg_d_od_max = 0.
+            for pos in self.positive_control:
+                for ele in all_data:
+                    if ele.is_cell(pos):
+                        avg_d_od_max += ele.results['Delta OD (Median Filtered Data)']
+                        break
+            avg_d_od_max /= len(self.positive_control)
+            if avg_d_od_max > 0:
+                self.results['Delta_OD / Positive_Control_Delta_OD'] = self.results['Delta OD (Median Filtered Data)'] / \
+                    avg_d_od_max
+                for i, thresh in enumerate(GradeThresholds):
+                    if self.results['Delta_OD / Positive_Control_Delta_OD'] < thresh/100.:
+                        self.results['Growth Rating'] = i
+                        return
+            else:
+                self.results['Delta_OD / Positive_Control_Delta_OD'] = ''
+                self.results['Growth Rating'] = ''
         else:
-            self.results['OD_Max_percent_positive_control'] = ''
-            self.results['GrowthGrade'] = ''
+            self.results['Delta_OD / Positive_Control_Delta_OD'] = ''
+            self.results['Growth Rating'] = ''
 
 
 def process_all_controls(all_data):
@@ -533,20 +550,20 @@ def ParseMetaDataAndRawDataPair(metadatafile,datafile):
         params = {label_row[i].value: row[i].value for i in range(len(label_row))}
         ret_kinetics.append(KineticMeasurement(**params))
         ret_kinetics[r-1].load_data(datafile, num_timepoints)
+
+    # process controls
     
     process_all_controls(ret_kinetics)
     
     return time_interval, ret_kinetics, labels
 
-    
-def get_positive_control(all_data):
-    for meas in all_data:
-        if meas.positive_control:
-            return meas
-    return None
+
+def write_ele_lookup_column(output_sheet, row, output_labels, lookup_string, val, data_format):
+    col = output_labels.index(lookup_string)
+    if (col >= 0 and col < len(output_labels)):
+        output_sheet.write(row, col, val, data_format)
 
 
-    
 def GrowthCurveModeler( file_or_dir, **varargin):
     """
     GrowthCurveModeler - Calculates some metrics for growth curves, as well as graphing
@@ -561,7 +578,7 @@ def GrowthCurveModeler( file_or_dir, **varargin):
       Excel file which specifies labels, and metadata for raw output data.
       If missing or empty, assumes data formatted like the example datasets.
 
-    GradeThresholds - default is [20,50]
+    GradeThresholds - default is [20,60]
         Percent Thresholds for grading bacterial growth delta od max vs the positive control's 
         delta od max.  Grades are 0 - (N+1) where N is the number of thresholds provided
         a grade m is given to a curve whos delta od max % of the positive control is 
@@ -618,7 +635,7 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     r2_good_fit_cutoff = 0.97
     metadata = False
     metadata_file = ''
-    GradeThresholds = [20,50]
+    GradeThresholds = [20,60]
 
     for k,v in varargin.items():
         if (k=='MaxTimepoint'):
@@ -667,9 +684,9 @@ def GrowthCurveModeler( file_or_dir, **varargin):
         (time_interval, kinetic_measurements) = ParseLegacyFormat(file_or_dir)
         metadata_labels = ['sugar', 'strain']
 
-    
 
-        
+
+    # run regressions
     for (i,meas) in enumerate(kinetic_measurements):
         sugar_folder = plots_folder + "/" + meas.sugar
         if (not os.path.exists(sugar_folder)):
@@ -689,26 +706,23 @@ def GrowthCurveModeler( file_or_dir, **varargin):
 
         meas.add_results(**results)
 
-        if ('rquared' in meas.results.keys()) and \
-            (not isinstance(meas.results['rsquared'], str) and\
-            meas.results['rsquared']  < r2_good_fit_cutoff):
-            if (len(meas.results['note']) > 0):
-                meas.results['note'] = meas.results['note'] + '; '
-            meas.results['note'] = meas.results['note'] + 'Poor Regression'
+        if ('R^2' in meas.results.keys()) and \
+            (not isinstance(meas.results['R^2'], str) and
+             meas.results['R^2'] < r2_good_fit_cutoff):
+            if (len(meas.results['Notes']) > 0):
+                meas.results['Notes'] = meas.results['Notes'] + '; '
+            meas.results['Notes'] = meas.results['Notes'] + 'Poor Regression'
 
 
 #process results
-    positive_control = get_positive_control(kinetic_measurements)
     for (i,meas) in enumerate(kinetic_measurements):
-        meas.calc_pos_control_metrics(positive_control, GradeThresholds)
+        meas.calc_pos_control_metrics(kinetic_measurements, GradeThresholds)
 
 
-    if positive_control:
-        pos_control_fields = ('Delta_OD / Positive_Control_Delta_OD * 100','Growth Rating')
-    else:
-        pos_control_fields = ()
+    pos_control_fields = ('Delta_OD / Positive_Control_Delta_OD','Growth Rating')
 
-    output = (*metadata_labels,'Lag Time (hours)', 'Max Specific Growth Rate (1/hours)',\
+
+    output_labels = (*metadata_labels,'Lag Time (hours)', 'Max Specific Growth Rate (1/hours)',\
             'Doubling Time (hours)', 'Max OD', 'Max OD (Median Filtered Data)', 'Min OD',\
             'Min OD (Median Filtered Data)', 'Delta OD (Median Filtered Data)',  \
             'R^2', 'RMSE', 'Notes', *pos_control_fields)
@@ -730,12 +744,12 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     red_text.set_color('red')
     red_text.set_align('center')
 
-    column_letter = chr(65 + 9 + len(metadata_labels))
+    column_letter = chr(65 + output_labels.index('R^2'))
     output_sheet.conditional_format(column_letter + '2:'+ column_letter + '600', {'type': 'cell', 'criteria': 'between',  'maximum': r2_good_fit_cutoff,'minimum': 0.0000001,  'format': red_fill})
     output_sheet.conditional_format(column_letter + '2:' + column_letter + '600', {
                                     'type': '2_color_scale', 'min_color': "#FFA550", 'max_color': "#80D040", 'min_type': 'num', 'max_type': 'num', 'min_value': r2_good_fit_cutoff, 'max_value': 1.0})
 #   output_sheet.conditional_format('L2:L600', {'type': 'cell','criteria': '>', 'value': r2_good_fit_cutoff,'minimum': 0.0000001,  'format': green_fill})
-    column_letter = chr(65 + 8 + len(metadata_labels))
+    column_letter = chr(65 + output_labels.index('Notes'))
 
     output_sheet.conditional_format(
         column_letter + '2:' + column_letter + '600', {'type': 'no_blanks', 'format': red_text})
@@ -747,20 +761,44 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     data_format = output_workbook.add_format()
     data_format.set_align('center')
 
-    output_sheet.write_row(0,0, output, header_format)
+    percent_format = output_workbook.add_format()
+    percent_format.set_num_format(10)
+    percent_format.set_align('center')
 
+
+    output_sheet.write_row(0,0, output_labels, header_format)
+
+    comma = ","
 
     #write outputs
     for (i,meas) in enumerate(kinetic_measurements):
         if metadata:
-            givens = (meas.column, meas.row, meas.sugar, 
-                      meas.strain, meas.negative_control, meas.positive_control) 
+            neg_control = ''
+            if isinstance(meas.negative_control, list):
+                neg_control = comma.join(meas.negative_control)
+            else:
+                neg_control = meas.negative_control
+            pos_control = ''
+            if isinstance(meas.positive_control, list):
+                pos_control = comma.join(meas.positive_control)
+            else:
+                pos_control = meas.positive_control
+            
+            givens = {'Column' : meas.column, 'Row':meas.row, 'Micro_sampleID':meas.sugar, 
+                      'Bug':meas.strain, 'negative_control':neg_control,'positive_control': pos_control}
         else:
-            givens = (meas.sugar, meas.strain)
-        output_sheet.write_row(i+1, 0, givens, data_format)
-        meta_data_values = tuple(meas.metadata_dict.values())
-        output_sheet.write_row(i+1, len(givens), meta_data_values, data_format)
-        output_sheet.write_row(i+1, len(givens) + len(meta_data_values), meas.results.values(), data_format)
+            givens = {'sugar':meas.sugar, 'strain':meas.strain}
+        
+
+        #TODO: iterate through each dictionary, find location in output labels, and write individually to the row.  
+
+        for dict_ele in (givens, meas.metadata_dict, meas.results):
+            for key, value in dict_ele.items():
+                if key == 'Delta_OD / Positive_Control_Delta_OD':
+                   cell_format = percent_format
+                else:
+                    cell_format = data_format
+                write_ele_lookup_column(output_sheet, i+1, output_labels, key, value, cell_format)
 
     output_workbook.close()
    
