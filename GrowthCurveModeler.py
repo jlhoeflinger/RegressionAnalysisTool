@@ -11,7 +11,8 @@ import math
 import matplotlib.pyplot as mpl
 import matplotlib.legend as mpll
 import warnings
-
+import numbers
+import copy
 
 def gompertz(x, A, B, C, D):
     return A * np.exp( - np.exp( -C * (x-B))) + D
@@ -394,6 +395,7 @@ class KineticMeasurement:
         self.sugar = Micro_sampleID
         self.strain = Bug
         self.metadata_dict = kwargs
+        self.collapsed = False
         if negative_control=='control':
             self.negative_control = 'self'
         else:
@@ -415,6 +417,18 @@ class KineticMeasurement:
     def add_results(self, **params):
         self.results.update(params)
 
+
+    def compare_metadata(self, test, IgnoreMetadataMatching):
+        if self.sugar != test.sugar:
+            return False
+        elif self.strain != test.strain:
+            return False
+        else:
+            for meta_label in self.metadata_dict.keys():
+                if meta_label not in IgnoreMetadataMatching and \
+                    self.metadata_dict[meta_label] != test.metadata_dict[meta_label]:
+                    return False
+        return True
 
 
 
@@ -564,6 +578,101 @@ def write_ele_lookup_column(output_sheet, row, output_labels, lookup_string, val
         output_sheet.write(row, col, val, data_format)
 
 
+def output_into_worksheet(output_labels, output_workbook, output_sheet, r2_good_fit_cutoff, kinetic_measurements, metadata):
+    green_fill = output_workbook.add_format()
+    green_fill.set_bg_color('#80D040')
+    red_fill = output_workbook.add_format()
+    red_fill.set_bg_color('#FF5050')
+    red_fill.set_align('center')
+    no_fill = output_workbook.add_format()
+    no_fill.set_align('center')
+    red_text = output_workbook.add_format()
+    red_text.set_color('red')
+    red_text.set_align('center')
+    column_letter = chr(65 + output_labels.index('R^2'))
+    output_sheet.conditional_format(column_letter + '2:' + column_letter + '600', {
+                                    'type': 'cell', 'criteria': 'between',  'maximum': r2_good_fit_cutoff, 'minimum': 0.0000001,  'format': red_fill})
+    output_sheet.conditional_format(column_letter + '2:' + column_letter + '600', {
+                                    'type': '2_color_scale', 'min_color': "#FFA550", 'max_color': "#80D040", 'min_type': 'num', 'max_type': 'num', 'min_value': r2_good_fit_cutoff, 'max_value': 1.0})
+#   output_sheet.conditional_format('L2:L600', {'type': 'cell','criteria': '>', 'value': r2_good_fit_cutoff,'minimum': 0.0000001,  'format': green_fill})
+    column_letter = chr(65 + output_labels.index('Notes'))
+
+    output_sheet.conditional_format(
+        column_letter + '2:' + column_letter + '600', {'type': 'no_blanks', 'format': red_text})
+    output_sheet.freeze_panes(1, 0)
+    header_format = output_workbook.add_format()
+    header_format.set_text_wrap(1)
+    header_format.set_bold(1)
+    header_format.set_align('center')
+    data_format = output_workbook.add_format()
+    data_format.set_align('center')
+
+    percent_format = output_workbook.add_format()
+    percent_format.set_num_format(10)
+    percent_format.set_align('center')
+
+    output_sheet.write_row(0, 0, output_labels, header_format)
+
+    comma = ","
+
+    #write outputs
+    row = 0
+    for  meas in kinetic_measurements:
+        if not meas.collapsed:
+            row += 1
+            if metadata:
+                neg_control = ''
+                if isinstance(meas.negative_control, list):
+                    neg_control = comma.join(meas.negative_control)
+                else:
+                    neg_control = meas.negative_control
+                pos_control = ''
+                if isinstance(meas.positive_control, list):
+                    pos_control = comma.join(meas.positive_control)
+                else:
+                    pos_control = meas.positive_control
+
+                givens = {'Column': meas.column, 'Row': meas.row, 'Micro_sampleID': meas.sugar,
+                        'Bug': meas.strain, 'negative_control': neg_control, 'positive_control': pos_control}
+            else:
+                givens = {'sugar': meas.sugar, 'strain': meas.strain}
+
+            #TODO: iterate through each dictionary, find location in output labels, and write individually to the row.
+
+            for dict_ele in (givens, meas.metadata_dict, meas.results):
+                for key, value in dict_ele.items():
+                    if key == 'Delta_OD / Positive_Control_Delta_OD':
+                        cell_format = percent_format
+                    else:
+                        cell_format = data_format
+                    write_ele_lookup_column(
+                        output_sheet, row, output_labels, key, value, cell_format)
+
+
+
+def summarize_matching_metadata(kinetic_measurements, IgnoreMetadataMatching):
+    summarized_measurements = []
+    for i, meas in enumerate(kinetic_measurements):
+        count = 1
+        if (not meas.collapsed and (meas.negative_control != "self") and (meas.positive_control != "self") and len(meas.results) > 0):
+            summary_meas = copy.deepcopy(meas)
+            summarized_measurements.append(summary_meas)
+            for j in range(len(kinetic_measurements) - i - 1):
+                test = kinetic_measurements[i + j + 1]
+                if summary_meas.compare_metadata(test, IgnoreMetadataMatching):
+                    if len(summary_meas.results) == len(test.results):
+                        count = count + 1
+                        test.collapsed = True
+                        for key in summary_meas.results.keys():
+                            if isinstance(meas.results[key], numbers.Number) and isinstance(test.results[key], numbers.Number):
+                                summary_meas.results[key] = summary_meas.results[key] + \
+                                    test.results[key]
+            for key in summary_meas.results.keys():
+                if isinstance(summary_meas.results[key], numbers.Number):
+                    summary_meas.results[key] /= float(count)
+    return summarized_measurements
+    
+
 def GrowthCurveModeler( file_or_dir, **varargin):
     """
     GrowthCurveModeler - Calculates some metrics for growth curves, as well as graphing
@@ -611,6 +720,9 @@ def GrowthCurveModeler( file_or_dir, **varargin):
      RSquaredFlag - value {default .97}
         Cutoff for "Good" regression fit
 
+     IgnoreMetadataMatching - list of strings {default []}
+        labels to ignore when finding matching metadaataa
+
       Examples:
           GrowthCurveModeler('dataset.xlsx', DoubleHump=True, Threshold=0.2);
 
@@ -636,12 +748,13 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     metadata = False
     metadata_file = ''
     GradeThresholds = [20,60]
+    IgnoreMetadataMatching = []
 
     for k,v in varargin.items():
         if (k=='MaxTimepoint'):
             max_timepoint = v
         if (k=='Threshold'):
-            threshold = v
+            growth_threshold = v
         if (k=='Model'):
             model = v
         if (k=='PreIncubationTime'):
@@ -659,6 +772,8 @@ def GrowthCurveModeler( file_or_dir, **varargin):
             metadata_file = v
         if (k=='GradeThresholds'):
             GradeThresholds = v
+        if (k == 'IgnoreMetadataMatching'):
+            IgnoreMetadataMatching = v
         
     
     (path, file) = os.path.split(file_or_dir)
@@ -732,73 +847,21 @@ def GrowthCurveModeler( file_or_dir, **varargin):
 
     output_file = path + 'results/' + stub + ' results.xlsx'
     output_workbook = xlsxwriter.Workbook(output_file)
-    output_sheet = output_workbook.add_worksheet("Results")
-    green_fill = output_workbook.add_format()
-    green_fill.set_bg_color('#80D040')
-    red_fill = output_workbook.add_format()
-    red_fill.set_bg_color('#FF5050')
-    red_fill.set_align('center')
-    no_fill = output_workbook.add_format()
-    no_fill.set_align('center')
-    red_text = output_workbook.add_format()
-    red_text.set_color('red')
-    red_text.set_align('center')
-
-    column_letter = chr(65 + output_labels.index('R^2'))
-    output_sheet.conditional_format(column_letter + '2:'+ column_letter + '600', {'type': 'cell', 'criteria': 'between',  'maximum': r2_good_fit_cutoff,'minimum': 0.0000001,  'format': red_fill})
-    output_sheet.conditional_format(column_letter + '2:' + column_letter + '600', {
-                                    'type': '2_color_scale', 'min_color': "#FFA550", 'max_color': "#80D040", 'min_type': 'num', 'max_type': 'num', 'min_value': r2_good_fit_cutoff, 'max_value': 1.0})
-#   output_sheet.conditional_format('L2:L600', {'type': 'cell','criteria': '>', 'value': r2_good_fit_cutoff,'minimum': 0.0000001,  'format': green_fill})
-    column_letter = chr(65 + output_labels.index('Notes'))
-
-    output_sheet.conditional_format(
-        column_letter + '2:' + column_letter + '600', {'type': 'no_blanks', 'format': red_text})
-    output_sheet.freeze_panes(1,0)
-    header_format = output_workbook.add_format()
-    header_format.set_text_wrap(1)
-    header_format.set_bold(1)
-    header_format.set_align('center')
-    data_format = output_workbook.add_format()
-    data_format.set_align('center')
-
-    percent_format = output_workbook.add_format()
-    percent_format.set_num_format(10)
-    percent_format.set_align('center')
 
 
-    output_sheet.write_row(0,0, output_labels, header_format)
+    output_sheet = output_workbook.add_worksheet("Results Full")
 
-    comma = ","
 
-    #write outputs
-    for (i,meas) in enumerate(kinetic_measurements):
-        if metadata:
-            neg_control = ''
-            if isinstance(meas.negative_control, list):
-                neg_control = comma.join(meas.negative_control)
-            else:
-                neg_control = meas.negative_control
-            pos_control = ''
-            if isinstance(meas.positive_control, list):
-                pos_control = comma.join(meas.positive_control)
-            else:
-                pos_control = meas.positive_control
-            
-            givens = {'Column' : meas.column, 'Row':meas.row, 'Micro_sampleID':meas.sugar, 
-                      'Bug':meas.strain, 'negative_control':neg_control,'positive_control': pos_control}
-        else:
-            givens = {'sugar':meas.sugar, 'strain':meas.strain}
-        
+    output_into_worksheet(output_labels, output_workbook, output_sheet, r2_good_fit_cutoff,
+                           kinetic_measurements, metadata)
 
-        #TODO: iterate through each dictionary, find location in output labels, and write individually to the row.  
 
-        for dict_ele in (givens, meas.metadata_dict, meas.results):
-            for key, value in dict_ele.items():
-                if key == 'Delta_OD / Positive_Control_Delta_OD':
-                   cell_format = percent_format
-                else:
-                    cell_format = data_format
-                write_ele_lookup_column(output_sheet, i+1, output_labels, key, value, cell_format)
+    summarized_measurements = summarize_matching_metadata(kinetic_measurements, IgnoreMetadataMatching)
+    output_sheet = output_workbook.add_worksheet("Results Summarized")
+
+    output_into_worksheet(output_labels, output_workbook, output_sheet,
+                          r2_good_fit_cutoff, summarized_measurements, metadata)
+
 
     output_workbook.close()
    
