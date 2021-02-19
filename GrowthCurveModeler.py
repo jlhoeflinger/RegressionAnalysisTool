@@ -517,7 +517,8 @@ def ParseLegacyFormat(file):
         else:
             strain = title_data1[i].value
             data = np.array(data_column_values, dtype=float)
-            ret_kinetics.append(KineticMeasurement(data, sugar, strain, {}, False, False))
+
+            ret_kinetics.append(KineticMeasurement(data=data, Micro_sampleID=sugar, Bug=strain))
     return time_interval, ret_kinetics
 
 def find_col(string_to_find, row):
