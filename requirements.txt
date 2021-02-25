@@ -1,5 +1,5 @@
-xlrd==1.1.0
-xlsxwriter==1.0.2
+xlrd
+xlsxwriter
 numpy
-scipy==1.0.0
-matplotlib==3.0.3
+scipy
+matplotlib
