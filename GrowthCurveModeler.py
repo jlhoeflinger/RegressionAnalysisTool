@@ -752,28 +752,29 @@ def GrowthCurveModeler( file_or_dir, **varargin):
     IgnoreMetadataMatching = []
 
     for k,v in varargin.items():
-        if (k=='MaxTimepoint'):
+        klow = k.lower()
+        if (klow=='maxtimepoint'):
             max_timepoint = v
-        if (k=='Threshold'):
+        if (klow=='threshold'):
             growth_threshold = v
-        if (k=='Model'):
+        if (klow=='nodel'):
             model = v
-        if (k=='PreIncubationTime'):
+        if (klow=='preincubationtime'):
             incubation_time = v
-        if (k=='DoubleHump'):
+        if (klow=='doublehump'):
             double_hump = v
-        if (k=='DataMin'):
+        if (klow=='datamin'):
             data_min = v
-        if (k=='IgnorePreMin'):
+        if (klow=='ignorepremin'):
             ignore_pre_min = v
-        if (k=='RSquaredFlag'):
+        if (klow=='rsquaredflag'):
             r2_good_fit_cutoff = v
-        if (k=='MetaDataFile'):
+        if (klow=='metadatafile'):
             metadata = True
             metadata_file = v
-        if (k=='GradeThresholds'):
+        if (klow=='gradethresholds'):
             GradeThresholds = v
-        if (k == 'IgnoreMetadataMatching'):
+        if (klow== 'ignoremetadatamatching'):
             IgnoreMetadataMatching = v
         
     
