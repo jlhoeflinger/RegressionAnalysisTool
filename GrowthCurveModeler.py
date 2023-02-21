@@ -757,7 +757,7 @@ def GrowthCurveModeler( file_or_dir, **varargin):
             max_timepoint = v
         if (klow=='threshold'):
             growth_threshold = v
-        if (klow=='nodel'):
+        if (klow=='model'):
             model = v
         if (klow=='preincubationtime'):
             incubation_time = v
