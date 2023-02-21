@@ -9,8 +9,8 @@ pip install -r requirements.txt
 To run the code with the example datasets run the following (in an ipython terminal):
 
 import GrowthCurveModeler as gcm
-gcm.GrowthCurveModeler('Growth Curve Sample Data Set 1.xlsx', threshold=0.2)
-gcm.GrowthCurveModeler('Growth Curve Sample Data Set 2.xlsx', threshold=0.2)
+gcm.GrowthCurveModeler('Growth Curve Sample Data Set 1.xlsx', Threshold=0.2)
+gcm.GrowthCurveModeler('Growth Curve Sample Data Set 2.xlsx', Threshold=0.2)
 
 
 
